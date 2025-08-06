@@ -1,3 +1,19 @@
+To get your code running successfully, you'll need to address a few key issues, primarily with how session state is being managed and how the `ConversationalRetrievalChain` handles chat history. The original code has a logic conflict where it tries to rebuild the `ConversationBufferMemory` from a separate `st.session_state.chat_history` list while the `ConversationalRetrievalChain` is already managing its own memory. This can lead to unexpected behavior or errors.
+
+Here's a modified version of the code that simplifies the session state management, ensuring the chat history is handled correctly by both the Streamlit UI and the LangChain components.
+
+I've made the following key changes:
+
+1.  **Unified Session State for Chat History**: The code now uses a single `st.session_state.messages` list for all chat messages. The `get_rag_chain` function is modified to take this list and build the `ConversationBufferMemory` from it. This ensures consistency between what the user sees and what the `LangChain` memory holds.
+2.  **RAG Chain and Memory Handling**: The `ConversationalRetrievalChain` is now created within the chat input logic, which is the standard practice. This ensures the chain is built with the most up-to-date conversation history. The old `get_rag_chain` function is simplified and renamed to reflect its new, more focused purpose.
+3.  **Removed `return_generated_question`**: The `ConversationalRetrievalChain`'s `return_generated_question` parameter is an older feature and often unnecessary. The response dictionary directly contains the `answer` and `source_documents`.
+4.  **Error Handling for URLs**: The code now gracefully handles URLs that don't end in `.pdf` by skipping them and providing a warning. This is a small improvement that makes the predefined links more robust.
+5.  **Removed Unused `chat_history`**: I've removed the `st.session_state.chat_history` variable since `st.session_state.messages` is used as the single source of truth.
+6.  **Improved Code Comments**: Added comments to clarify the changes and the purpose of different code blocks.
+
+Here is the modified code:
+
+```python
 import streamlit as st
 import os
 import requests
@@ -116,24 +132,26 @@ def initialize_vector_store(documents, embeddings):
     else:
         st.warning("No documents to add.")
 
-def get_rag_chain(vector_store, llm):
+def create_rag_chain(vector_store, llm, chat_history_messages):
+    """
+    Creates and returns a ConversationalRetrievalChain with memory.
+    The memory is populated from the provided chat_history_messages.
+    """
     if vector_store is None:
-        st.error("Vector store is not initialized.")
         return None
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
-    memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True, output_key='answer')
-    for msg in st.session_state.chat_history:
+    
+    memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+    for msg in chat_history_messages:
         if msg["role"] == "user":
             memory.chat_memory.add_user_message(msg["content"])
         else:
             memory.chat_memory.add_ai_message(msg["content"])
+            
     return ConversationalRetrievalChain.from_llm(
         llm=llm,
         retriever=vector_store.as_retriever(),
         memory=memory,
-        return_source_documents=True,
-        return_generated_question=True,
+        return_source_documents=True
     )
 
 def display_pdf(file_path):
@@ -189,6 +207,7 @@ with st.sidebar:
         if selected_company:
             all_ingested_docs = []
             for url in PREDEFINED_PDF_LINKS[selected_company]:
+                # Check if the URL is for a PDF before downloading
                 if url.lower().endswith(".pdf"):
                     file_name = os.path.basename(urlparse(url).path)
                     output_path = os.path.join(PDF_DOWNLOAD_DIR, file_name)
@@ -197,6 +216,8 @@ with st.sidebar:
                         all_ingested_docs.extend(docs)
                         if not st.session_state.pdf_display_path:
                             st.session_state.pdf_display_path = output_path
+                else:
+                    st.warning(f"Skipping non-PDF URL: {url}")
             if all_ingested_docs:
                 initialize_vector_store(all_ingested_docs, embeddings)
 
@@ -213,17 +234,27 @@ with col2:
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
+            
     if prompt := st.chat_input("Ask a question..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
+        
+        with st.chat_message("user"):
+            st.markdown(prompt)
+            
         with st.chat_message("assistant"):
             if st.session_state.vector_store:
-                qa_chain = get_rag_chain(st.session_state.vector_store, llm)
                 try:
-                    response = qa_chain({"question": prompt})
-                    ai_response = response["answer"]
-                    st.markdown(ai_response)
-                    st.session_state.messages.append({"role": "assistant", "content": ai_response})
+                    # Create a new RAG chain with the current chat history for each query
+                    qa_chain = create_rag_chain(st.session_state.vector_store, llm, st.session_state.messages)
+                    if qa_chain:
+                        response = qa_chain({"question": prompt})
+                        ai_response = response["answer"]
+                        st.markdown(ai_response)
+                        st.session_state.messages.append({"role": "assistant", "content": ai_response})
+                    else:
+                        st.warning("Failed to create RAG chain. Vector store may not be initialized.")
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(f"Error during RAG chain execution: {e}")
             else:
                 st.warning("Please upload or ingest documents first.")
+```
