@@ -7,19 +7,24 @@ from urllib.parse import urlparse
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.embeddings import OllamaEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain.chains import ConversationalRetrievalChain
-from langchain_community.llms import HuggingFacePipeline
+from langchain_community.llms import Ollama
 from langchain.memory import ConversationBufferMemory
-from transformers import pipeline
+from dotenv import load_dotenv
+
+# Load environment variables (for OLLAMA_BASE_URL if needed)
+load_dotenv()
 
 # --- Configuration ---
 PDF_DOWNLOAD_DIR = "downloaded_pdfs"
 os.makedirs(PDF_DOWNLOAD_DIR, exist_ok=True)
 
 CHROMA_DB_DIR = "chroma_db"
+os.makedirs(CHROMA_DB_DIR, exist_ok=True)
 
+# Predefined PDFs per company, with all your provided links included:
 PREDEFINED_PDF_LINKS = {
     "Dell": [
         "https://i.dell.com/sites/csdocuments/Product_Docs/en/Dell-EMC-PowerEdge-Rack-Servers-Quick-Reference-Guide.pdf",
@@ -61,7 +66,6 @@ PREDEFINED_PDF_LINKS = {
 }
 
 # --- Helper Functions ---
-
 def download_pdf(url, output_path):
     try:
         response = requests.get(url, stream=True, timeout=30)
@@ -71,11 +75,8 @@ def download_pdf(url, output_path):
                 f.write(chunk)
         st.success(f"Downloaded: {os.path.basename(output_path)}")
         return True
-    except requests.exceptions.RequestException as e:
-        st.error(f"Error downloading {url}: {e}")
-        return False
     except Exception as e:
-        st.error(f"Unexpected error downloading {url}: {e}")
+        st.error(f"Error downloading {url}: {e}")
         return False
 
 def load_and_split_pdf(file_path):
@@ -91,23 +92,16 @@ def load_and_split_pdf(file_path):
         return []
 
 @st.cache_resource
-def get_embeddings():
-    return HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+def get_ollama_embeddings():
+    return OllamaEmbeddings(model="nomic-embed-text")
 
 @st.cache_resource
-def get_llm():
-    generator = pipeline(
-        "text-generation",
-        model="distilgpt2",
-        max_length=512,
-        temperature=0.7,
-        pad_token_id=50256
-    )
-    return HuggingFacePipeline(pipeline=generator)
+def get_ollama_llm():
+    return Ollama(model="llama2")
 
 def initialize_vector_store(documents, embeddings):
     if documents:
-        if 'vector_store' in st.session_state and st.session_state.vector_store is not None:
+        if 'vector_store' in st.session_state and st.session_state.vector_store:
             st.session_state.vector_store.add_documents(documents)
             st.info("Added new documents to existing vector store.")
         else:
@@ -120,47 +114,42 @@ def initialize_vector_store(documents, embeddings):
         st.session_state.vector_store.persist()
         st.success("Vector store updated successfully!")
     else:
-        st.warning("No documents to add to the vector store.")
+        st.warning("No documents to add.")
 
 def get_rag_chain(vector_store, llm):
     if vector_store is None:
-        st.error("Vector store is not initialized. Please upload documents first.")
+        st.error("Vector store is not initialized.")
         return None
-
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
-
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True, output_key='answer')
-
     for msg in st.session_state.chat_history:
         if msg["role"] == "user":
             memory.chat_memory.add_user_message(msg["content"])
         else:
             memory.chat_memory.add_ai_message(msg["content"])
-
-    conversation_chain = ConversationalRetrievalChain.from_llm(
+    return ConversationalRetrievalChain.from_llm(
         llm=llm,
         retriever=vector_store.as_retriever(),
         memory=memory,
         return_source_documents=True,
         return_generated_question=True,
     )
-    return conversation_chain
 
 def display_pdf(file_path):
     try:
         with open(file_path, "rb") as f:
             base64_pdf = base64.b64encode(f.read()).decode('utf-8')
-        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="700px" type="application/pdf"></iframe>'
+        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="700px"></iframe>'
         st.markdown(pdf_display, unsafe_allow_html=True)
     except Exception as e:
         st.error(f"Could not display PDF: {e}")
 
 # --- Streamlit UI ---
-
-st.set_page_config(layout="wide", page_title="RAG Application with PDF Viewer")
+st.set_page_config(layout="wide", page_title="MANISH SINGH RAG App with PDF Viewer")
 st.title("📄 RAG Application with Document Chat")
 
+# Initialize session state
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "vector_store" not in st.session_state:
@@ -168,48 +157,36 @@ if "vector_store" not in st.session_state:
 if "pdf_display_path" not in st.session_state:
     st.session_state.pdf_display_path = None
 
-# Initialize LLM and Embeddings once
+# Initialize LLM and Embeddings
 try:
-    embeddings = get_embeddings()
-    llm = get_llm()
+    embeddings = get_ollama_embeddings()
+    llm = get_ollama_llm()
 except Exception as e:
     st.error(f"Failed to initialize models. Error: {e}")
     st.stop()
 
+# Sidebar for uploads
 with st.sidebar:
-    st.header("Upload Documents & Ingest Data")
-
-    uploaded_files = st.file_uploader(
-        "Upload PDF files for RAG",
-        type="pdf",
-        accept_multiple_files=True,
-        key="pdf_uploader"
-    )
-
-    if uploaded_files:
-        if st.button("Process Uploaded PDFs"):
-            all_new_docs = []
-            for uploaded_file in uploaded_files:
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-                    tmp_file.write(uploaded_file.getvalue())
-                    temp_file_path = tmp_file.name
-                new_docs = load_and_split_pdf(temp_file_path)
-                all_new_docs.extend(new_docs)
-                if not st.session_state.pdf_display_path:
-                    st.session_state.pdf_display_path = temp_file_path
-            if all_new_docs:
-                initialize_vector_store(all_new_docs, embeddings)
-                st.success("Uploaded PDFs processed and added to knowledge base!")
-            else:
-                st.warning("No new documents extracted from uploaded PDFs.")
+    st.header("Upload & Ingest Documents")
+    uploaded_files = st.file_uploader("Upload PDFs", type="pdf", accept_multiple_files=True)
+    if uploaded_files and st.button("Process Uploaded PDFs"):
+        all_new_docs = []
+        for uploaded_file in uploaded_files:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                tmp_file.write(uploaded_file.getvalue())
+                temp_file_path = tmp_file.name
+            new_docs = load_and_split_pdf(temp_file_path)
+            all_new_docs.extend(new_docs)
+            if not st.session_state.pdf_display_path:
+                st.session_state.pdf_display_path = temp_file_path
+        if all_new_docs:
+            initialize_vector_store(all_new_docs, embeddings)
 
     st.markdown("---")
-    st.subheader("Pre-fed Database Ingestion")
-    selected_company = st.selectbox("Select a company to ingest documents:", [""] + list(PREDEFINED_PDF_LINKS.keys()))
-
-    if st.button("Ingest Pre-defined Documents"):
+    st.subheader("Predefined Database Ingestion")
+    selected_company = st.selectbox("Select a company", [""] + list(PREDEFINED_PDF_LINKS.keys()))
+    if st.button("Ingest Predefined PDFs"):
         if selected_company:
-            st.info(f"Ingesting documents for {selected_company}...")
             all_ingested_docs = []
             for url in PREDEFINED_PDF_LINKS[selected_company]:
                 if url.lower().endswith(".pdf"):
@@ -220,60 +197,33 @@ with st.sidebar:
                         all_ingested_docs.extend(docs)
                         if not st.session_state.pdf_display_path:
                             st.session_state.pdf_display_path = output_path
-                else:
-                    st.warning(f"Skipping non-PDF link: {url}")
             if all_ingested_docs:
                 initialize_vector_store(all_ingested_docs, embeddings)
-                st.success(f"All documents for {selected_company} ingested successfully!")
-            else:
-                st.warning(f"No PDF documents ingested for {selected_company}.")
-        else:
-            st.warning("Please select a company to ingest documents.")
 
+# Layout
 col1, col2 = st.columns([0.6, 0.4])
-
 with col1:
     st.subheader("PDF Viewer")
     if st.session_state.pdf_display_path:
         display_pdf(st.session_state.pdf_display_path)
     else:
-        st.info("Upload a PDF or ingest pre-defined documents to view it here.")
-
+        st.info("Upload or ingest a PDF to view it here.")
 with col2:
-    st.subheader("Chat with your Documents")
-
+    st.subheader("Chat with Documents")
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
-
-    if prompt := st.chat_input("Ask a question about the documents..."):
+    if prompt := st.chat_input("Ask a question..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
         with st.chat_message("assistant"):
-            if st.session_state.vector_store is None:
-                st.warning("Please upload or ingest documents first to enable chat.")
-                st.session_state.messages.append({"role": "assistant", "content": "Please upload or ingest documents first."})
+            if st.session_state.vector_store:
+                qa_chain = get_rag_chain(st.session_state.vector_store, llm)
+                try:
+                    response = qa_chain({"question": prompt})
+                    ai_response = response["answer"]
+                    st.markdown(ai_response)
+                    st.session_state.messages.append({"role": "assistant", "content": ai_response})
+                except Exception as e:
+                    st.error(f"Error: {e}")
             else:
-                with st.spinner("Thinking..."):
-                    qa_chain = get_rag_chain(st.session_state.vector_store, llm)
-                    if qa_chain:
-                        try:
-                            response = qa_chain({"question": prompt})
-                            ai_response = response["answer"]
-                            st.markdown(ai_response)
-                            st.session_state.messages.append({"role": "assistant", "content": ai_response})
-
-                            if response.get("source_documents"):
-                                st.markdown("---")
-                                st.markdown("**Sources:**")
-                                for i, doc in enumerate(response["source_documents"]):
-                                    source_info = doc.metadata.get('source', 'Unknown source')
-                                    page_info = doc.metadata.get('page', 'N/A')
-                                    st.markdown(f"- **Source {i+1}:** {source_info}, Page: {page_info}")
-                        except Exception as e:
-                            st.error(f"Error during RAG chain execution: {e}")
-                            st.session_state.messages.append({"role": "assistant", "content": f"An error occurred: {e}"})
-                    else:
-                        st.session_state.messages.append({"role": "assistant", "content": "RAG chain could not be initialized."})
+                st.warning("Please upload or ingest documents first.")
