@@ -7,14 +7,14 @@ from urllib.parse import urlparse
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import OllamaEmbeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain.chains import ConversationalRetrievalChain
-from langchain_community.llms import Ollama
 from langchain.memory import ConversationBufferMemory
 from dotenv import load_dotenv
+from langchain_groq import ChatGroq
 
-# Load environment variables (for OLLAMA_BASE_URL if needed)
+# Load environment variables
 load_dotenv()
 
 # --- Configuration ---
@@ -22,7 +22,6 @@ PDF_DOWNLOAD_DIR = "downloaded_pdfs"
 os.makedirs(PDF_DOWNLOAD_DIR, exist_ok=True)
 
 CHROMA_DB_DIR = "chroma_db"
-os.makedirs(CHROMA_DB_DIR, exist_ok=True)
 
 # Predefined PDFs per company, with all your provided links included:
 PREDEFINED_PDF_LINKS = {
@@ -64,6 +63,216 @@ PREDEFINED_PDF_LINKS = {
         "https://apparity.com/euc-resources/spreadsheet-euc-documents/",
     ],
 }
+
+# --- Helper Functions ---
+
+def download_pdf(url, output_path):
+    try:
+        response = requests.get(url, stream=True, timeout=30)
+        response.raise_for_status()
+        with open(output_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        st.success(f"Downloaded: {os.path.basename(output_path)}")
+        return True
+    except Exception as e:
+        st.error(f"Error downloading {url}: {e}")
+        return False
+
+def load_and_split_pdf(file_path):
+    try:
+        loader = PyPDFLoader(file_path)
+        documents = loader.load()
+        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        texts = splitter.split_documents(documents)
+        st.success(f"Processed {len(texts)} chunks from {os.path.basename(file_path)}")
+        return texts
+    except Exception as e:
+        st.error(f"Error processing PDF {os.path.basename(file_path)}: {e}")
+        return []
+
+@st.cache_resource
+def get_embeddings():
+    return HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+
+@st.cache_resource
+def get_llm():
+    return ChatGroq(
+        api_key=os.getenv("GROQ_API_KEY"),
+        model="llama3-70b-8192",
+        temperature=0
+    )
+
+def initialize_vector_store(documents, embeddings):
+    if documents:
+        if 'vector_store' in st.session_state and st.session_state.vector_store is not None:
+            st.session_state.vector_store.add_documents(documents)
+            st.info("Added new documents to existing vector store.")
+        else:
+            st.session_state.vector_store = Chroma.from_documents(
+                documents=documents,
+                embedding=embeddings,
+                persist_directory=CHROMA_DB_DIR
+            )
+            st.info("Created new vector store.")
+        st.session_state.vector_store.persist()
+        st.success("Vector store updated successfully!")
+    else:
+        st.warning("No documents to add to the vector store.")
+
+def get_rag_chain(vector_store, llm):
+    if vector_store is None:
+        st.error("Vector store is not initialized.")
+        return None
+
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+
+    memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True, output_key='answer')
+
+    for msg in st.session_state.chat_history:
+        if msg["role"] == "user":
+            memory.chat_memory.add_user_message(msg["content"])
+        else:
+            memory.chat_memory.add_ai_message(msg["content"])
+
+    return ConversationalRetrievalChain.from_llm(
+        llm=llm,
+        retriever=vector_store.as_retriever(),
+        memory=memory,
+        return_source_documents=True
+    )
+
+def display_pdf(file_path):
+    try:
+        with open(file_path, "rb") as f:
+            base64_pdf = base64.b64encode(f.read()).decode('utf-8')
+        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="700px" type="application/pdf"></iframe>'
+        st.markdown(pdf_display, unsafe_allow_html=True)
+    except Exception as e:
+        st.error(f"Could not display PDF: {e}")
+
+# --- Streamlit UI ---
+st.set_page_config(layout="wide", page_title="RAG App with Groq")
+st.title("📄 RAG Application with Document Chat (Groq)")
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "vector_store" not in st.session_state:
+    st.session_state.vector_store = None
+if "pdf_display_path" not in st.session_state:
+    st.session_state.pdf_display_path = None
+
+try:
+    embeddings = get_embeddings()
+    llm = get_llm()
+except Exception as e:
+    st.error(f"Failed to initialize models. Error: {e}")
+    st.stop()
+
+# Sidebar
+with st.sidebar:
+    st.header("Upload & Ingest")
+
+    uploaded_files = st.file_uploader(
+        "Upload PDF files",
+        type="pdf",
+        accept_multiple_files=True
+    )
+
+    if uploaded_files and st.button("Process Uploaded PDFs"):
+        all_new_docs = []
+        for uploaded_file in uploaded_files:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                tmp_file.write(uploaded_file.getvalue())
+                temp_file_path = tmp_file.name
+            new_docs = load_and_split_pdf(temp_file_path)
+            all_new_docs.extend(new_docs)
+            if not st.session_state.pdf_display_path:
+                st.session_state.pdf_display_path = temp_file_path
+        if all_new_docs:
+            initialize_vector_store(all_new_docs, embeddings)
+
+    st.subheader("Pre-fed Database")
+    selected_company = st.selectbox("Select a company", [""] + list(PREDEFINED_PDF_LINKS.keys()))
+    if st.button("Ingest Pre-defined Documents"):
+        if selected_company:
+            all_docs = []
+            for url in PREDEFINED_PDF_LINKS[selected_company]:
+                if url.lower().endswith(".pdf"):
+                    file_name = os.path.basename(urlparse(url).path)
+                    output_path = os.path.join(PDF_DOWNLOAD_DIR, file_name)
+                    if download_pdf(url, output_path):
+                        docs = load_and_split_pdf(output_path)
+                        all_docs.extend(docs)
+                        if not st.session_state.pdf_display_path:
+                            st.session_state.pdf_display_path = output_path
+                else:
+                    st.warning(f"Skipping non-PDF: {url}")
+            if all_docs:
+                initialize_vector_store(all_docs, embeddings)
+
+# Main UI
+col1, col2 = st.columns([0.6, 0.4])
+
+with col1:
+    st.subheader("📑 PDF Viewer")
+    if st.session_state.pdf_display_path:
+        display_pdf(st.session_state.pdf_display_path)
+    else:
+        st.info("Upload or ingest a PDF.")
+
+with col2:
+    st.subheader("💬 Chat with Documents")
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    if prompt := st.chat_input("Ask something about the document..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("assistant"):
+            if st.session_state.vector_store is None:
+                reply = "Please upload or ingest documents first."
+                st.markdown(reply)
+                st.session_state.messages.append({"role": "assistant", "content": reply})
+            else:
+                with st.spinner("Thinking..."):
+                    qa_chain = get_rag_chain(st.session_state.vector_store, llm)
+                    if qa_chain:
+                        try:
+                            response = qa_chain({"question": prompt})
+                            ai_response = response["answer"]
+                            st.markdown(ai_response)
+                            st.session_state.messages.append({"role": "assistant", "content": ai_response})
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+import streamlit as st
+import os
+import requests
+import tempfile
+import base64
+from urllib.parse import urlparse
+
+from langchain_community.document_loaders import PyPDFLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.embeddings import OllamaEmbeddings
+from langchain_community.vectorstores import Chroma
+from langchain.chains import ConversationalRetrievalChain
+from langchain_community.llms import Ollama
+from langchain.memory import ConversationBufferMemory
+from dotenv import load_dotenv
+
+# Load environment variables (for OLLAMA_BASE_URL if needed)
+load_dotenv()
+
+# --- Configuration ---
+PDF_DOWNLOAD_DIR = "downloaded_pdfs"
+os.makedirs(PDF_DOWNLOAD_DIR, exist_ok=True)
+
+CHROMA_DB_DIR = "chroma_db"
+os.makedirs(CHROMA_DB_DIR, exist_ok=True)
+
+
 
 # --- Helper Functions ---
 def download_pdf(url, output_path):
