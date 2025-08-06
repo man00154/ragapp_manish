@@ -1,42 +1,20 @@
-FROM python:3.10-slim
+# Use a lightweight Python base image
+FROM python:3.11-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-
-# Install system dependencies & Ollama
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
-    git \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Ollama
-RUN curl -fsSL https://ollama.com/install.sh | sh
-
-# Set workdir
+# Set the working directory in the container
 WORKDIR /app
 
-# Copy requirements and install Python packages
-COPY requirements.txt /app/
+# Copy the requirements file into the container
+COPY requirements.txt ./
+
+# Install the Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy app files
-COPY . /app/
+# Copy all the remaining files from the current directory into the container
+COPY . .
 
-# Environment variables for Streamlit
-ENV STREAMLIT_SERVER_HEADLESS=true
-ENV STREAMLIT_SERVER_ENABLECORS=false
-ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
-ENV PORT=8501
+# Expose the port that Streamlit runs on
+EXPOSE 8501
 
-# Expose ports
-EXPOSE $PORT
-EXPOSE 11434  # Ollama server port
-
-# Pull models so they are ready at runtime
-RUN ollama pull llama2 && ollama pull nomic-embed-text
-
-# Start Ollama server in background, wait, then run Streamlit
-CMD ollama serve & \
-    sleep 5 && \
-    streamlit run app.py --server.port=$PORT --server.address=0.0.0.0
+# Command to run the Streamlit application when the container starts
+CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
