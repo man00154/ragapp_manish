@@ -13,6 +13,13 @@ from langchain.chains import ConversationalRetrievalChain
 from langchain_community.llms import Ollama
 from langchain.memory import ConversationBufferMemory
 from dotenv import load_dotenv
+from langchain.chat_models import ChatOpenAI
+from langchain.embeddings import OpenAIEmbeddings
+
+# Requires OPENAI_API_KEY in Render environment variables
+embeddings = OpenAIEmbeddings(openai_api_key=os.getenv("OPENAI_API_KEY"))
+llm = ChatOpenAI(openai_api_key=os.getenv("OPENAI_API_KEY"), temperature=0)
+
 
 # Load environment variables (for OLLAMA_BASE_URL if needed)
 load_dotenv()
