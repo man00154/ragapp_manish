@@ -1,19 +1,3 @@
-To get your code running successfully, you'll need to address a few key issues, primarily with how session state is being managed and how the `ConversationalRetrievalChain` handles chat history. The original code has a logic conflict where it tries to rebuild the `ConversationBufferMemory` from a separate `st.session_state.chat_history` list while the `ConversationalRetrievalChain` is already managing its own memory. This can lead to unexpected behavior or errors.
-
-Here's a modified version of the code that simplifies the session state management, ensuring the chat history is handled correctly by both the Streamlit UI and the LangChain components.
-
-I've made the following key changes:
-
-1.  **Unified Session State for Chat History**: The code now uses a single `st.session_state.messages` list for all chat messages. The `get_rag_chain` function is modified to take this list and build the `ConversationBufferMemory` from it. This ensures consistency between what the user sees and what the `LangChain` memory holds.
-2.  **RAG Chain and Memory Handling**: The `ConversationalRetrievalChain` is now created within the chat input logic, which is the standard practice. This ensures the chain is built with the most up-to-date conversation history. The old `get_rag_chain` function is simplified and renamed to reflect its new, more focused purpose.
-3.  **Removed `return_generated_question`**: The `ConversationalRetrievalChain`'s `return_generated_question` parameter is an older feature and often unnecessary. The response dictionary directly contains the `answer` and `source_documents`.
-4.  **Error Handling for URLs**: The code now gracefully handles URLs that don't end in `.pdf` by skipping them and providing a warning. This is a small improvement that makes the predefined links more robust.
-5.  **Removed Unused `chat_history`**: I've removed the `st.session_state.chat_history` variable since `st.session_state.messages` is used as the single source of truth.
-6.  **Improved Code Comments**: Added comments to clarify the changes and the purpose of different code blocks.
-
-Here is the modified code:
-
-```python
 import streamlit as st
 import os
 import requests
