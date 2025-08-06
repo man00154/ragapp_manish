@@ -1,7 +1,10 @@
 streamlit
 langchain-community
-transformers
-torch
+langchain
 chromadb
 requests
 python-dotenv
+transformers
+torch
+sentence-transformers
+pypdf
