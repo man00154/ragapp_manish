@@ -241,4 +241,4 @@ with col2:
                     st.error(f"Error during RAG chain execution: {e}")
             else:
                 st.warning("Please upload or ingest documents first.")
-```
+
