@@ -1,0 +1,8 @@
+streamlit
+langchain
+langchain-community
+pypdf
+chromadb
+requests
+python-dotenv
+ollama # If you plan to use a local Ollama server or a remote one accessible via URL
