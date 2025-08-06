@@ -1,41 +1,36 @@
-# Use an official Python runtime as a parent image
-FROM python:3.9-slim-buster
-
-# Set the working directory in the container
-WORKDIR /app
-
-# Copy the current directory contents into the container at /app
-COPY . /app
-
-# Install any needed packages specified in requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Expose the port Streamlit runs on
-EXPOSE 8501
-
-# Command to run the Streamlit application
-# The --server.port $PORT ensures Streamlit listens on the port provided by Render
-# The --server.enableCORS false and --server.enableXsrfProtection false are often needed for deployment environments
-CMD ["streamlit", "run", "app.py", "--server.port", "8501", "--server.address", "0.0.0.0", "--server.enableCORS", "false", "--server.enableXsrfProtection", "false"]
+# Use an official Python image with modern SQLite support
 FROM python:3.11-slim
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y build-essential libsqlite3-dev wget
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PIP_NO_CACHE_DIR=1
 
-# Upgrade SQLite
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    wget \
+    curl \
+    libsqlite3-dev \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+# Upgrade SQLite to version >= 3.35.0 (here we use 3.45.0)
 RUN wget https://www.sqlite.org/2024/sqlite-autoconf-3450000.tar.gz \
     && tar xvfz sqlite-autoconf-3450000.tar.gz \
     && cd sqlite-autoconf-3450000 \
     && ./configure --prefix=/usr/local \
-    && make && make install
+    && make && make install \
+    && cd .. && rm -rf sqlite-autoconf-3450000*
 
-# Make Python use the new SQLite
-RUN apt-get install -y python3-dev
-RUN python3 -m pip install --upgrade pip
-
+# Upgrade pip and install dependencies
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install -r requirements.txt
+RUN pip install --upgrade pip
+RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy application code
 COPY . .
+
+# Streamlit specific settings
+EXPOSE 10000
 CMD ["streamlit", "run", "app.py", "--server.port=10000", "--server.address=0.0.0.0"]
