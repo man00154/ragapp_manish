@@ -1,8 +1,9 @@
 streamlit
 langchain
 langchain-community
-ollama
-python-dotenv
-requests
+langchain-groq
+sentence-transformers
 chromadb
+python-dotenv
 pypdf
+requests
