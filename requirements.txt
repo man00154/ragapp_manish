@@ -5,6 +5,6 @@ langchain-groq
 python-dotenv
 chromadb
 sentence-transformers
-requests
 pypdf
 tiktoken
+requests
