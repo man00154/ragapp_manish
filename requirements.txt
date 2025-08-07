@@ -2,8 +2,9 @@ streamlit
 langchain
 langchain-community
 langchain-groq
-sentence-transformers
-chromadb
 python-dotenv
-pypdf
+chromadb
+sentence-transformers
 requests
+pypdf
+tiktoken
